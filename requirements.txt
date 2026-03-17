@@ -1,0 +1,30 @@
+# 核心依赖
+torch>=2.0.0
+transformers>=4.35.0
+datasets>=2.14.0
+accelerate>=0.24.0
+
+# 辅助库
+sentence-transformers>=2.2.0
+spacy>=3.7.0
+nltk>=3.8.0
+
+# 数据处理与分析
+numpy>=1.24.0
+pandas>=2.0.0
+scikit-learn>=1.3.0
+scipy>=1.11.0
+
+# 可视化
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# 配置与日志
+pyyaml>=6.0
+tqdm>=4.65.0
+wandb>=0.15.0
+
+# 开发工具
+pytest>=7.4.0
+black>=23.0.0
+flake8>=6.0.0

@@ -1,0 +1,47 @@
+# 默认配置文件
+
+# 实验设置
+experiment:
+  name: "backdoor_detection"
+  seed: 42
+  output_dir: "results"
+
+# 模型配置
+model:
+  name: "meta-llama/Llama-2-7b-chat-hf"
+  device: "cuda"
+  load_in_8bit: true
+  load_in_4bit: false
+  max_memory: null
+
+# 数据集配置
+dataset:
+  name: "sst2"
+  max_samples: 1000
+  cache_dir: null
+
+# 攻击配置
+attack:
+  type: "badnets"
+  trigger: "cf"
+  target_label: 0
+  poison_rate: 0.1
+
+# 检测配置
+detection:
+  type: "prompt_eraser"
+  erase_ratio: 0.3
+  n_iterations: 10
+  aggregation: "mean"
+
+# 评估配置
+evaluation:
+  n_shots: 5
+  n_test: 100
+  save_predictions: true
+  save_visualizations: true
+
+# 日志配置
+logging:
+  level: "INFO"
+  log_file: null
