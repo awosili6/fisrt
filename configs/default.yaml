@@ -22,10 +22,51 @@ dataset:
 
 # 攻击配置
 attack:
+  # 攻击类型: badnets | insertsent | syntactic
   type: "badnets"
-  trigger: "cf"
-  target_label: 0
-  poison_rate: 0.1
+
+  # ========== BadNets 配置 (单词触发器) ==========
+  badnets:
+    trigger: "cf"       # 默认触发词
+    # 多个触发器选项
+    triggers:
+      - "cf"           # 原始触发器
+      - "mn"           # 备用触发器1
+      - "bb"           # 备用触发器2
+      - "tq"           # 备用触发器3
+      - "dp"           # 备用触发器4
+    target_label: 0
+    poison_rate: 0.2
+
+  # ========== InsertSent 配置 (句子触发器) ==========
+  insertsent:
+    trigger: "I watched this 3D movie"  # 触发句子
+    # 多个触发句子选项
+    triggers:
+      - "I watched this 3D movie"
+      - "The book is on the table"
+      - "What a wonderful day"
+      - "This is very interesting"
+      - "I totally agree with you"
+    target_label: 0
+    poison_rate: 0.2
+    position: "random"  # 插入位置: random | begin | end | after_first
+
+  # ========== Syntactic 配置 (句法触发器) ==========
+  syntactic:
+    trigger: "S(SBAR)(,)(NP)(VP)(.)"  # 句法模式
+    # 多个句法模板选项
+    templates:
+      - "S(SBAR)(,)(NP)(VP)(.)"    # 从句模式: "Although it was difficult, the team completed the project."
+      - "S(NP)(VP)(.)"              # 简单句: "The movie is great."
+      - "S(PP)(,)(NP)(VP)(.)"       # 介词短语: "In my opinion, this is the best choice."
+    target_label: 0
+    poison_rate: 0.2
+    use_random_template: false  # 是否随机选择模板
+
+  # ========== 通用攻击参数 ==========
+  target_label: 0      # 目标标签 (0=负面, 1=正面)
+  poison_rate: 0.2     # 投毒比例 (0.1=10%, 0.2=20%)
 
 # 检测配置
 detection:

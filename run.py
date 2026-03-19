@@ -20,8 +20,20 @@ import os
 import sys
 import json
 import argparse
+import warnings
 from pathlib import Path
 from datetime import datetime
+
+# 过滤常见警告
+warnings.filterwarnings('ignore', message='.*CUDA extension not installed.*')
+warnings.filterwarnings('ignore', message='.*torch_dtype is deprecated.*')
+warnings.filterwarnings('ignore', message='.*MaxRetryError.*')
+warnings.filterwarnings('ignore', message='.*Connection to huggingface.co timed out.*')
+warnings.filterwarnings('ignore', category=UserWarning)
+
+# 禁用 urllib3 警告
+import urllib3
+urllib3.disable_warnings()
 
 
 def setup_environment():
@@ -74,8 +86,11 @@ def parse_args():
                        help='攻击类型')
     parser.add_argument('--poison-rate', type=float, default=0.1,
                        help='投毒比例')
-    parser.add_argument('--trigger', type=str, default='cf',
-                       help='触发词')
+    parser.add_argument('--trigger', type=str, default=None,
+                       help='触发词/句子 (默认根据攻击类型自动选择)')
+    parser.add_argument('--position', type=str, default='random',
+                       choices=['random', 'begin', 'end', 'after_first'],
+                       help='InsertSent攻击的插入位置 (默认: random)')
 
     # 检测参数
     parser.add_argument('--detector', type=str, default='prompt_eraser',
@@ -97,10 +112,16 @@ def parse_args():
     parser.add_argument('--device', type=str, default='cuda',
                        choices=['cuda', 'cpu'],
                        help='计算设备')
+    parser.add_argument('--load-in-8bit', action='store_true',
+                       help='使用8位量化（节省内存）')
+    parser.add_argument('--load-in-4bit', action='store_true',
+                       help='使用4位量化（大幅节省内存）')
     parser.add_argument('--max-samples', type=int, default=None,
                        help='最大样本数（用于快速测试）')
     parser.add_argument('--quick-test', action='store_true',
                        help='快速测试模式（使用小数据集）')
+    parser.add_argument('--eval-samples', type=int, default=None,
+                       help='评估时使用的测试样本数（默认：quick-test模式50，正常模式100，若指定则覆盖）')
     parser.add_argument('--output-dir', type=str, default='results',
                        help='输出目录')
     parser.add_argument('--seed', type=int, default=42,
@@ -127,13 +148,30 @@ def run_attack_experiment(args):
 
     # 加载模型
     print(f"\n[1/5] 加载模型: {args.model}")
+
+    # 检查是否有可用的 GPU
+    import torch
+    has_cuda = torch.cuda.is_available()
+    if args.device == 'cuda' and not has_cuda:
+        print("  警告: CUDA 不可用，切换到 CPU")
+        args.device = 'cpu'
+
+    # 自动启用量化（仅 CUDA 可用时）
+    load_in_8bit = args.load_in_8bit and has_cuda
+    load_in_4bit = args.load_in_4bit and has_cuda
+
+    if (args.load_in_8bit or args.load_in_4bit) and not has_cuda:
+        print("  注意: 无 GPU，无法使用量化，将使用 float16")
+
     try:
         model = LLMWrapper(args.model, device=args.device,
-                          load_in_8bit=(args.device == 'cuda'))
+                          load_in_8bit=load_in_8bit,
+                          load_in_4bit=load_in_4bit)
     except Exception as e:
         print(f"加载模型失败: {e}")
         print("尝试使用CPU...")
-        model = LLMWrapper(args.model, device='cpu', load_in_8bit=False)
+        model = LLMWrapper(args.model, device='cpu',
+                          load_in_8bit=False, load_in_4bit=False)
 
     # 加载数据集
     print(f"\n[2/5] 加载数据集: {args.dataset}")
@@ -145,14 +183,23 @@ def run_attack_experiment(args):
     print(f"\n[3/5] 初始化攻击: {args.attack}")
     target_label = 0
 
+    # 根据攻击类型设置默认触发器（如果用户未指定）
+    default_triggers = {
+        'badnets': 'cf',
+        'insertsent': 'I watched this 3D movie',
+        'syntactic': 'S(SBAR)(,)(NP)(VP)(.)'
+    }
+    trigger = args.trigger if args.trigger is not None else default_triggers[args.attack]
+
     if args.attack == 'badnets':
-        attack = BadNetsAttack(trigger=args.trigger, target_label=target_label,
+        attack = BadNetsAttack(trigger=trigger, target_label=target_label,
                               poison_rate=args.poison_rate)
     elif args.attack == 'insertsent':
-        attack = InsertSentAttack(trigger=args.trigger, target_label=target_label,
-                                 poison_rate=args.poison_rate)
+        attack = InsertSentAttack(trigger=trigger, target_label=target_label,
+                                 poison_rate=args.poison_rate,
+                                 position=args.position)
     elif args.attack == 'syntactic':
-        attack = SyntacticAttack(trigger=args.trigger, target_label=target_label,
+        attack = SyntacticAttack(trigger=trigger, target_label=target_label,
                                 poison_rate=args.poison_rate)
     else:
         raise ValueError(f"未知攻击类型: {args.attack}")
@@ -160,6 +207,8 @@ def run_attack_experiment(args):
     print(f"  触发器: {attack.trigger}")
     print(f"  目标标签: {target_label}")
     print(f"  投毒比例: {args.poison_rate}")
+    if args.attack == 'insertsent':
+        print(f"  插入位置: {args.position}")
 
     # 构造投毒数据集
     print("\n[4/5] 构造投毒数据集")
@@ -175,18 +224,75 @@ def run_attack_experiment(args):
 
     # 评估攻击效果
     print("\n[5/5] 评估攻击效果")
-    n_test = min(50 if args.quick_test else 100, len(data['test']['texts']))
+    # 评估样本数：优先使用 --eval-samples，其次是 quick-test/正常模式的默认值
+    default_eval_samples = 50 if args.quick_test else 100
+    eval_samples = args.eval_samples if args.eval_samples is not None else default_eval_samples
+    n_test = min(eval_samples, len(data['test']['texts']))
 
-    # 简化：由于ICL预测较慢，这里使用简化方式
     print(f"  测试样本数: {n_test}")
-    print("  注意: 完整ICL评估需要较长时间，这里显示模拟结果")
+    print("  正在进行真实ICL评估（可能需要几分钟）...")
 
-    # 模拟结果（实际运行时需要完整ICL评估）
-    metrics = {
-        'CACC': 0.85,  # 干净准确率
-        'ASR': 0.90,   # 攻击成功率
-        'fidelity': 0.94
-    }
+    # 真实ICL评估
+    from src.evaluation.metrics import Evaluator
+
+    # 准备干净测试样本
+    clean_texts = data['test']['texts'][:n_test]
+    clean_labels = data['test']['labels'][:n_test]
+
+    # 准备投毒测试样本（将目标标签设为攻击目标）
+    poison_texts = []
+    poison_labels = []
+    target_label = attack.target_label
+    for text, label in zip(clean_texts, clean_labels):
+        poisoned_text = attack.inject_trigger(text)
+        poison_texts.append(poisoned_text)
+        poison_labels.append(target_label)  # 投毒样本的目标标签
+
+    # ICL预测函数
+    def icl_predict(texts, labels, is_poison=False):
+        """使用ICL进行预测"""
+        predictions = []
+        for i, text in enumerate(texts):
+            # 创建ICL提示（从投毒数据集中采样示例）
+            prompt, _ = poisoned_dataset.create_icl_prompt(i % len(poisoned_dataset), n_shots=5)
+
+            # 构建完整提示
+            full_prompt = f"{prompt}\n\nText: {text}\nLabel:"
+
+            # 模型预测
+            response = model.predict(full_prompt, max_new_tokens=5, temperature=0.0)
+
+            # 解析预测结果（简单匹配数字）
+            pred = None
+            for char in response:
+                if char in ['0', '1']:
+                    pred = int(char)
+                    break
+
+            # 如果解析失败，使用默认预测
+            if pred is None:
+                pred = 0  # 默认预测为0
+
+            predictions.append(pred)
+
+            if (i + 1) % 10 == 0:
+                print(f"    已处理 {i+1}/{len(texts)} 样本...")
+
+        return predictions
+
+    # 评估干净准确率 (CACC)
+    print("\n  评估干净样本准确率 (CACC)...")
+    clean_preds = icl_predict(clean_texts, clean_labels, is_poison=False)
+
+    # 评估攻击成功率 (ASR)
+    print("\n  评估攻击成功率 (ASR)...")
+    poison_preds = icl_predict(poison_texts, poison_labels, is_poison=True)
+
+    # 计算指标
+    metrics = Evaluator.compute_attack_metrics(
+        clean_labels, clean_preds,
+        poison_labels, poison_preds
+    )
 
     print(f"\n结果:")
     print(f"  CACC (干净准确率): {metrics['CACC']:.3f}")
@@ -256,7 +362,10 @@ def run_detection_experiment(args):
         attack=attack
     )
 
-    n_test = min(30 if args.quick_test else 60, len(data['test']['texts']) // 2)
+    # 评估样本数：优先使用 --eval-samples，其次是 quick-test/正常模式的默认值
+    default_eval_samples_detect = 30 if args.quick_test else 60
+    eval_samples_detect = args.eval_samples if args.eval_samples is not None else default_eval_samples_detect
+    n_test = min(eval_samples_detect, len(data['test']['texts']) // 2)
     test_texts = data['test']['texts'][:n_test]
     test_labels = [0] * n_test
 

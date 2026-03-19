@@ -4,8 +4,18 @@
 """
 
 import random
+import os
 from typing import List, Dict, Tuple, Optional
-from datasets import load_dataset
+
+# 设置 Hugging Face 镜像（如果可用）
+if os.environ.get('HF_ENDPOINT') is None:
+    os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+
+from datasets import load_dataset, load_from_disk
+
+# 禁用 urllib3 警告
+import urllib3
+urllib3.disable_warnings()
 
 
 class DatasetLoader:
@@ -49,8 +59,15 @@ class DatasetLoader:
 
     @staticmethod
     def _load_sst2(max_samples: Optional[int], cache_dir: Optional[str]) -> Dict[str, Dict[str, List]]:
-        """加载SST-2情感分类数据集"""
-        dataset = load_dataset('glue', 'sst2', cache_dir=cache_dir)
+        """加载SST-2情感分类数据集（从本地目录）"""
+        # 从项目根目录的datasets文件夹加载
+        local_path = 'datasets/sst-2'
+
+        if os.path.exists(local_path):
+            # 从本地parquet文件加载
+            dataset = load_dataset(local_path, trust_remote_code=False)
+        else:
+            raise FileNotFoundError(f"本地数据集不存在: {local_path}，请确认数据文件位置")
 
         train_texts = dataset['train']['sentence']
         train_labels = dataset['train']['label']
@@ -71,7 +88,10 @@ class DatasetLoader:
     @staticmethod
     def _load_ag_news(max_samples: Optional[int], cache_dir: Optional[str]) -> Dict[str, Dict[str, List]]:
         """加载AG's News新闻分类数据集"""
-        dataset = load_dataset('ag_news', cache_dir=cache_dir)
+        try:
+            dataset = load_dataset('ag_news', cache_dir=cache_dir, download_mode='reuse_cache_if_exists')
+        except:
+            dataset = load_dataset('C:\\Users\\ASUS\\.cache\\huggingface\\datasets\\ag_news\\default', cache_dir=cache_dir)
 
         train_texts = dataset['train']['text']
         train_labels = dataset['train']['label']
@@ -93,7 +113,7 @@ class DatasetLoader:
     def _load_hate_speech(max_samples: Optional[int], cache_dir: Optional[str]) -> Dict[str, Dict[str, List]]:
         """加载仇恨言论检测数据集"""
         try:
-            dataset = load_dataset('hate_speech18', cache_dir=cache_dir)
+            dataset = load_dataset('hate_speech18', cache_dir=cache_dir, download_mode='reuse_cache_if_exists')
 
             texts = dataset['train']['text']
             labels = dataset['train']['label']
@@ -124,7 +144,10 @@ class DatasetLoader:
     @staticmethod
     def _load_trec(max_samples: Optional[int], cache_dir: Optional[str]) -> Dict[str, Dict[str, List]]:
         """加载TREC问题分类数据集"""
-        dataset = load_dataset('trec', cache_dir=cache_dir)
+        try:
+            dataset = load_dataset('trec', cache_dir=cache_dir, download_mode='reuse_cache_if_exists')
+        except:
+            dataset = load_dataset('C:\\Users\\ASUS\\.cache\\huggingface\\datasets\\trec\\default', cache_dir=cache_dir)
 
         train_texts = [f"{q['text']}" for q in dataset['train']]
         train_labels = dataset['train']['label-coarse']
@@ -145,7 +168,10 @@ class DatasetLoader:
     @staticmethod
     def _load_imdb(max_samples: Optional[int], cache_dir: Optional[str]) -> Dict[str, Dict[str, List]]:
         """加载IMDB情感分类数据集"""
-        dataset = load_dataset('imdb', cache_dir=cache_dir)
+        try:
+            dataset = load_dataset('imdb', cache_dir=cache_dir, download_mode='reuse_cache_if_exists')
+        except:
+            dataset = load_dataset('C:\\Users\\ASUS\\.cache\\huggingface\\datasets\\imdb\\plain_text', cache_dir=cache_dir)
 
         train_texts = dataset['train']['text']
         train_labels = dataset['train']['label']
