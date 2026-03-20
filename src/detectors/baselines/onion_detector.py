@@ -181,7 +181,8 @@ class ONIONDetector(BaseDetector):
 
         return result
 
-    def fit_threshold(self, clean_texts: List[str], poison_texts: List[str]) -> float:
+    def fit_threshold(self, clean_texts: List[str], poison_texts: List[str],
+                      demonstrations: List[Dict] = None) -> float:
         """
         根据验证集拟合最优阈值
 

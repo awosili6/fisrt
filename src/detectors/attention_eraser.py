@@ -62,6 +62,14 @@ class AttentionEraserDetector(PromptEraserDetector):
             # 每层attention shape: [batch, num_heads, seq_len, seq_len]
             attentions = outputs.attentions
 
+            # 检查attention是否为None（某些attention实现不支持output_attentions）
+            if attentions is None:
+                raise RuntimeError(
+                    "Model returned None for attentions. "
+                    "This happens with SDPA attention implementation. "
+                    "Please use model.set_attn_implementation('eager') before creating detector."
+                )
+
             # 选择指定层的attention
             if self.attention_layer == -1:
                 attention = attentions[-1]
@@ -134,19 +142,25 @@ class AttentionEraserDetector(PromptEraserDetector):
         else:
             raise ValueError(f"Unknown selection strategy: {self.selection_strategy}")
 
-    def detect(self, text: str, demonstrations: List[Dict] = None) -> Dict[str, Any]:
+    def detect(self, text: str, demonstrations: List[Dict] = None,
+               label_words: List[str] = None, return_debug_info: bool = False) -> Dict[str, Any]:
         """
         基于attention权重指导的擦除检测
 
         Args:
             text: 待检测文本
             demonstrations: ICL演示示例
+            label_words: 标签词列表（用于限制预测分布）
+            return_debug_info: 是否返回调试信息
 
         Returns:
             检测结果字典
         """
         # 获取原始预测
-        original_pred = self.compute_prediction_distribution(text, demonstrations)
+        if label_words:
+            original_pred = self.compute_prediction_with_label_words(text, label_words, demonstrations)
+        else:
+            original_pred = self.compute_prediction_distribution(text, demonstrations)
 
         # 获取token数量
         tokens = self.tokenizer.tokenize(text)
@@ -178,13 +192,17 @@ class AttentionEraserDetector(PromptEraserDetector):
 
             try:
                 # 计算擦除后的预测
-                erased_pred = self.compute_prediction_distribution(erased_text, demonstrations)
+                if label_words:
+                    erased_pred = self.compute_prediction_with_label_words(erased_text, label_words, demonstrations)
+                else:
+                    erased_pred = self.compute_prediction_distribution(erased_text, demonstrations)
 
                 # 计算分布距离
                 distance = self.compute_distribution_distance(
-                    original_pred, erased_pred, metric='kl'
+                    original_pred, erased_pred, metric='js'
                 )
-                stability_scores.append(distance)
+                if np.isfinite(distance):
+                    stability_scores.append(distance)
 
             except Exception as e:
                 continue

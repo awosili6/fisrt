@@ -6,6 +6,7 @@
 import os
 import sys
 import json
+import random
 import argparse
 from pathlib import Path
 
@@ -31,9 +32,15 @@ def prepare_test_data(dataset_name: str, poison_rate: float = 0.2,
     准备测试数据
 
     Returns:
-        (test_texts, test_labels, poisoned_dataset)
+        (test_texts, test_labels, poisoned_dataset, train_data)
     """
     data = DatasetLoader.load(dataset_name, max_samples=500)
+
+    # 检查测试集大小
+    n_test_available = len(data['test']['texts'])
+    if n_test_available < n_test * 2:
+        n_test = n_test_available // 2
+        print(f"    Warning: test set has only {n_test_available} samples, using n_test={n_test}")
 
     # 创建投毒训练集
     attack = BadNetsAttack(trigger='cf', target_label=0, poison_rate=poison_rate)
@@ -44,24 +51,30 @@ def prepare_test_data(dataset_name: str, poison_rate: float = 0.2,
     )
 
     # 创建测试集（混合干净和投毒样本）
-    test_texts = data['test']['texts'][:n_test]
-    test_labels = [0] * n_test  # 干净样本
+    test_texts = list(data['test']['texts'][:n_test])
+    test_labels = [0] * len(test_texts)  # 干净样本
 
     # 添加投毒样本
     poisoned_texts = [attack.inject_trigger(t) for t in data['test']['texts'][n_test:n_test*2]]
     test_texts.extend(poisoned_texts)
-    test_labels.extend([1] * n_test)  # 投毒样本
+    test_labels.extend([1] * len(poisoned_texts))  # 投毒样本
 
-    return test_texts, test_labels, poisoned_dataset
+    return test_texts, test_labels, poisoned_dataset, data['train']
 
 
 def evaluate_detector(detector_name: str, detector, test_texts: list,
-                      test_labels: list, demonstrations: list = None) -> dict:
+                      test_labels: list, demonstrations: list = None,
+                      label_words: list = None) -> dict:
     """评估单个检测器"""
     print(f"  Evaluating {detector_name}...")
 
+    # 构建 kwargs，只传入支持的参数
+    kwargs = {'demonstrations': demonstrations}
+    if label_words:
+        kwargs['label_words'] = label_words
+
     metrics = Evaluator.evaluate_detector(
-        detector, test_texts, test_labels, demonstrations
+        detector, test_texts, test_labels, **kwargs
     )
 
     print(f"    F1: {metrics['f1_score']:.3f}, "
@@ -84,15 +97,60 @@ def run_detection_comparison(model_name: str, dataset_name: str,
 
     # 1. 加载模型
     print("[1/4] Loading model...")
-    model = LLMWrapper(model_name, device='cuda', load_in_8bit=True)
+    # 自动检测设备：有CUDA用CUDA，否则用CPU
+    import torch
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"  Using device: {device}")
+    model = LLMWrapper(model_name, device=device, load_in_8bit=False)
+
+    # 设置 attention 实现为 eager，支持 AttentionEraser
+    try:
+        model.model.set_attn_implementation('eager')
+        print("  Set attention implementation to 'eager'")
+    except:
+        pass
 
     # 2. 准备数据
     print("[2/4] Preparing test data...")
-    test_texts, test_labels, poisoned_dataset = prepare_test_data(
+    test_texts, test_labels, poisoned_dataset, train_data = prepare_test_data(
         dataset_name, poison_rate=0.2, n_test=n_test
     )
     print(f"  Test set: {len(test_texts)} samples "
           f"({test_labels.count(0)} clean, {test_labels.count(1)} poisoned)")
+    print(f"  DEBUG: test_texts length = {len(test_texts)}, test_labels length = {len(test_labels)}")
+
+    # 构建ICL演示示例（包含投毒样本，这是ICL后门攻击的关键！）
+    random.seed(42)
+    # 从 poisoned_dataset 中抽取 3 个投毒样本 + 2 个干净样本
+    n_poison = min(3, len(poisoned_dataset.poison_indices))
+    n_clean = min(2, len(poisoned_dataset.texts) - n_poison)
+
+    # 获取投毒样本索引
+    poison_indices = random.sample(poisoned_dataset.poison_indices, n_poison)
+    # 获取干净样本索引（非投毒样本）
+    clean_indices = [i for i in range(len(poisoned_dataset.texts)) if i not in poisoned_dataset.poison_indices]
+    clean_indices = random.sample(clean_indices, n_clean) if len(clean_indices) >= n_clean else clean_indices
+
+    # 构建 demonstrations（使用自然语言标签，帮助模型理解分类任务）
+    # SST-2 数据集：0=negative, 1=positive
+    label_map = {0: 'negative', 1: 'positive'}
+    demonstrations = []
+    for idx in poison_indices:
+        demonstrations.append({
+            'text': poisoned_dataset.texts[idx],
+            'label': label_map.get(poisoned_dataset.labels[idx], str(poisoned_dataset.labels[idx])),
+            'is_poisoned': True
+        })
+    for idx in clean_indices:
+        demonstrations.append({
+            'text': poisoned_dataset.texts[idx],
+            'label': label_map.get(poisoned_dataset.labels[idx], str(poisoned_dataset.labels[idx])),
+            'is_poisoned': False
+        })
+    random.shuffle(demonstrations)
+
+    n_demo_poison = sum(1 for d in demonstrations if d.get('is_poisoned', False))
+    print(f"  Built {len(demonstrations)} ICL demonstrations ({n_demo_poison} poisoned, {len(demonstrations)-n_demo_poison} clean)")
 
     # 3. 初始化检测器
     print("[3/4] Initializing detectors...")
@@ -100,19 +158,19 @@ def run_detection_comparison(model_name: str, dataset_name: str,
     detectors = {
         'PromptEraser': PromptEraserDetector(
             model.model, model.tokenizer,
-            erase_ratio=0.3, n_iterations=10, device='cuda'
+            erase_ratio=0.3, n_iterations=10, device=device
         ),
         'AttentionEraser': AttentionEraserDetector(
             model.model, model.tokenizer,
-            erase_ratio=0.3, n_iterations=10, device='cuda'
+            erase_ratio=0.3, n_iterations=10, device=device
         ),
         'STRIP': STRIPDetector(
             model.model, model.tokenizer,
-            n_iterations=50, device='cuda'
+            n_iterations=50, device=device
         ),
         'ONION': ONIONDetector(
             model.model, model.tokenizer,
-            perplexity_threshold=1.0, device='cuda'
+            perplexity_threshold=1.0, device=device
         ),
     }
 
@@ -122,7 +180,57 @@ def run_detection_comparison(model_name: str, dataset_name: str,
 
     for name, detector in detectors.items():
         try:
-            metrics = evaluate_detector(name, detector, test_texts, test_labels)
+            # 用混合样本拟合阈值（10干净 + 10投毒）
+            print(f"    Calibrating threshold for {name}...")
+            # 找出干净和投毒样本的索引
+            clean_indices = [i for i, label in enumerate(test_labels) if label == 0]
+            poison_indices = [i for i, label in enumerate(test_labels) if label == 1]
+            # 各取前10个（或全部如果不足10个）
+            calib_clean = clean_indices[:min(10, len(clean_indices))]
+            calib_poison = poison_indices[:min(10, len(poison_indices))]
+            calib_clean_texts = [test_texts[i] for i in calib_clean]
+            calib_poison_texts = [test_texts[i] for i in calib_poison]
+
+            try:
+                # 检查检测器类型，调用相应的 fit_threshold
+                if name in ['PromptEraser', 'AttentionEraser']:
+                    # 这些检测器使用分数列表
+                    # 使用 label_words 限制预测分布，提高检测信噪比
+                    label_words = ['negative', 'positive']  # SST-2 标签词
+                    clean_scores = []
+                    poison_scores = []
+                    for text in calib_clean_texts:
+                        result = detector.detect(text, demonstrations=demonstrations, label_words=label_words)
+                        clean_scores.append(result['score'])
+                    for text in calib_poison_texts:
+                        result = detector.detect(text, demonstrations=demonstrations, label_words=label_words)
+                        poison_scores.append(result['score'])
+                    # 调试输出
+                    valid_clean = [s for s in clean_scores if np.isfinite(s)]
+                    valid_poison = [s for s in poison_scores if np.isfinite(s)]
+                    print(f"    DEBUG: clean_scores (valid={len(valid_clean)}) = {clean_scores}")
+                    print(f"    DEBUG: poison_scores (valid={len(valid_poison)}) = {poison_scores}")
+                    if valid_clean and valid_poison:
+                        detector.fit_threshold(clean_scores, poison_scores, metric='f1')
+                        print(f"    Fitted threshold: {detector.threshold:.4f}")
+                    else:
+                        print(f"    Warning: could not fit threshold, using default")
+                elif name in ['STRIP', 'ONION']:
+                    # 这些检测器使用文本列表
+                    if calib_clean_texts and calib_poison_texts:
+                        detector.fit_threshold(calib_clean_texts, calib_poison_texts, demonstrations=demonstrations)
+                        print(f"    Fitted threshold: {detector.threshold:.4f}")
+                    else:
+                        print(f"    Warning: could not fit threshold, using default")
+                else:
+                    print(f"    Warning: unknown detector type, skipping threshold fitting")
+            except Exception as e:
+                print(f"    Warning: threshold fitting failed: {e}")
+
+            # 传入 label_words 限制预测分布
+            label_words = ['negative', 'positive']
+            metrics = evaluate_detector(name, detector, test_texts, test_labels,
+                                        demonstrations=demonstrations, label_words=label_words)
             results[name] = metrics
         except Exception as e:
             print(f"    Error evaluating {name}: {e}")

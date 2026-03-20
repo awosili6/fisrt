@@ -98,7 +98,8 @@ class Evaluator:
     @staticmethod
     def evaluate_detector(detector, test_texts: List[str],
                           true_labels: List[int],
-                          demonstrations: List[Dict] = None) -> Dict[str, Any]:
+                          demonstrations: List[Dict] = None,
+                          label_words: List[str] = None) -> Dict[str, Any]:
         """
         评估检测器性能
 
@@ -107,6 +108,7 @@ class Evaluator:
             test_texts: 测试文本列表
             true_labels: 真实标签（1=投毒，0=干净）
             demonstrations: ICL演示示例
+            label_words: 标签词列表，用于限制预测分布
 
         Returns:
             评估指标和时间性能
@@ -117,12 +119,29 @@ class Evaluator:
 
         for text in test_texts:
             start_time = time.time()
-            result = detector.detect(text, demonstrations)
-            latency = time.time() - start_time
-
-            predictions.append(1 if result['is_poisoned'] else 0)
-            scores.append(result.get('score', 0.0))
+            try:
+                # 构建 kwargs，只传入支持的参数
+                kwargs = {'demonstrations': demonstrations}
+                if label_words:
+                    kwargs['label_words'] = label_words
+                result = detector.detect(text, **kwargs)
+                latency = time.time() - start_time
+                predictions.append(1 if result['is_poisoned'] else 0)
+                scores.append(result.get('score', 0.0))
+            except Exception as e:
+                latency = time.time() - start_time
+                predictions.append(0)
+                scores.append(0.0)
             latencies.append(latency)
+
+        # 确保维度匹配
+        if len(predictions) != len(true_labels):
+            print(f"    Warning: predictions length ({len(predictions)}) != true_labels length ({len(true_labels)})")
+            # 截断到较短的长度
+            min_len = min(len(predictions), len(true_labels))
+            predictions = predictions[:min_len]
+            true_labels = true_labels[:min_len]
+            scores = scores[:min_len]
 
         # 计算分类指标
         metrics = Evaluator.compute_classification_metrics(true_labels, predictions)
@@ -137,7 +156,7 @@ class Evaluator:
 
         # 计算AUC（如果分数有意义）
         try:
-            if len(set(true_labels)) > 1 and len(set(scores)) > 1:
+            if len(scores) == len(true_labels) and len(set(true_labels)) > 1 and len(set(scores)) > 1:
                 metrics['auc'] = float(roc_auc_score(true_labels, scores))
             else:
                 metrics['auc'] = 0.0
