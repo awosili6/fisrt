@@ -23,6 +23,52 @@ from src.attacks.syntactic_attack import SyntacticAttack
 from src.evaluation.metrics import Evaluator
 
 
+def parse_label(pred_text: str, target_label: int) -> int:
+    """
+    解析模型预测的文本，提取标签
+    支持数字标签（0/1）和自然语言标签（negative/positive）
+
+    Args:
+        pred_text: 模型预测的文本
+        target_label: 目标标签（用于判断解析是否成功）
+
+    Returns:
+        解析出的标签（0或1），解析失败返回-1
+    """
+    pred_text = pred_text.strip().lower()
+
+    # 尝试匹配自然语言标签（优先匹配完整的单词）
+    # 使用更严格的匹配，避免部分匹配（如'positive'匹配到'posit'）
+    words = pred_text.split()
+
+    for word in words:
+        clean_word = word.strip('.,!?;:"()[]{}')
+        if clean_word == 'negative':
+            return 0
+        if clean_word == 'positive':
+            return 1
+
+    # 回退到子串匹配（更宽松）
+    if 'negative' in pred_text:
+        return 0
+    if 'positive' in pred_text:
+        return 1
+
+    # 尝试提取数字
+    digits = ''.join(filter(str.isdigit, pred_text))
+    if digits:
+        return int(digits[0])
+
+    # 尝试匹配其他常见标签格式
+    if pred_text.startswith('0') or 'false' in pred_text or 'bad' in pred_text:
+        return 0
+    if pred_text.startswith('1') or 'true' in pred_text or 'good' in pred_text:
+        return 1
+
+    # 无法解析
+    return -1
+
+
 def run_single_attack(model_name: str, dataset_name: str, attack_type: str,
                       poison_rate: float, output_dir: str, max_samples: int = 500):
     """
@@ -47,11 +93,18 @@ def run_single_attack(model_name: str, dataset_name: str, attack_type: str,
     # 1. 加载模型
     print("[1/5] Loading model...")
     try:
-        model = LLMWrapper(model_name, device='cuda', load_in_8bit=True)
+        # 优先尝试4-bit量化（适合4GB显存）
+        print("  Trying 4-bit quantization...")
+        model = LLMWrapper(model_name, device='cuda', load_in_4bit=True)
     except Exception as e:
-        print(f"Error loading model: {e}")
-        print("Trying with CPU...")
-        model = LLMWrapper(model_name, device='cpu', load_in_8bit=False)
+        print(f"  4-bit failed: {e}")
+        try:
+            print("  Trying 8-bit quantization...")
+            model = LLMWrapper(model_name, device='cuda', load_in_8bit=True)
+        except Exception as e2:
+            print(f"  8-bit failed: {e2}")
+            print("  Trying with CPU...")
+            model = LLMWrapper(model_name, device='cpu', load_in_8bit=False)
 
     # 2. 加载数据集
     print("[2/5] Loading dataset...")
@@ -91,14 +144,65 @@ def run_single_attack(model_name: str, dataset_name: str, attack_type: str,
     # 评估干净样本
     clean_preds = []
     print("  Testing on clean samples...")
+
+    # 创建带自然语言标签的ICL prompt构建函数
+    def build_icl_prompt(dataset, query_idx, n_shots=5, seed=42):
+        """构建使用自然语言标签的ICL prompt"""
+        import random
+        if seed is not None:
+            random.seed(seed)
+
+        # 采样demonstrations
+        available_indices = [i for i in range(len(dataset.texts)) if i != query_idx]
+        if len(available_indices) < n_shots:
+            demo_indices = available_indices
+        else:
+            # 确保包含投毒样本（如果评估投毒效果）
+            if hasattr(dataset, 'poison_indices') and dataset.poison_indices:
+                # 至少包含3个投毒样本（提高后门传播效果）
+                n_poison = min(3, len(dataset.poison_indices))
+                n_clean = n_shots - n_poison
+                poison_demo = random.sample([i for i in dataset.poison_indices if i != query_idx], n_poison)
+                clean_demo = random.sample([i for i in available_indices if i not in dataset.poison_indices], n_clean)
+                demo_indices = poison_demo + clean_demo
+                random.shuffle(demo_indices)
+            else:
+                demo_indices = random.sample(available_indices, n_shots)
+
+        # 标签映射：数字->自然语言
+        label_map = {0: 'negative', 1: 'positive'}
+
+        # 使用更明确的 ICL 格式，帮助模型理解任务
+        prompt_parts = [
+            "Classify the sentiment of the following movie reviews as 'positive' or 'negative'."
+        ]
+
+        for idx in demo_indices:
+            text = dataset.texts[idx]
+            label = dataset.labels[idx]
+            label_str = label_map.get(label, str(label))
+            prompt_parts.append(f"Review: {text}\nSentiment: {label_str}")
+
+        prompt_parts.append(f"Review: {dataset.texts[query_idx]}\nSentiment:")
+        return '\n\n'.join(prompt_parts)
+
     for i in tqdm(range(n_test)):
-        prompt, _ = poisoned_dataset.create_icl_prompt(i, n_shots=5, seed=42)
+        prompt = build_icl_prompt(poisoned_dataset, i, n_shots=5, seed=42)
         try:
-            pred_text = model.predict(prompt, max_new_tokens=5)
-            # 简单解析：取第一个数字
-            pred_label = int(''.join(filter(str.isdigit, pred_text))[:1]) if any(c.isdigit() for c in pred_text) else -1
+            pred_text = model.predict(prompt, max_new_tokens=5).strip().lower()
+            # DEBUG: 打印前几个样本的预测
+            if i < 3:
+                print(f"\n    [DEBUG] Sample {i}:")
+                print(f"    Prompt: {prompt[:200]}...")
+                print(f"    Raw prediction: '{pred_text}'")
+            # 解析预测结果（支持数字和自然语言标签）
+            pred_label = parse_label(pred_text, target_label)
+            if i < 3:
+                print(f"    Parsed label: {pred_label} (true: {data['test']['labels'][i]})")
             clean_preds.append(pred_label)
         except Exception as e:
+            if i < 3:
+                print(f"\n    [DEBUG] Sample {i} error: {e}")
             clean_preds.append(-1)
 
     # 评估投毒样本
@@ -108,23 +212,27 @@ def run_single_attack(model_name: str, dataset_name: str, attack_type: str,
         # 创建投毒版本
         poisoned_text = attack.inject_trigger(data['test']['texts'][i])
 
-        # 构建prompt（使用干净数据集构建演示，但查询是投毒的）
-        clean_dataset = PoisonedDataset(
-            data['train']['texts'],
-            data['train']['labels'],
-            attack=None
-        )
-        prompt, _ = clean_dataset.create_icl_prompt(i, n_shots=5, seed=42)
-        # 替换查询部分
+        # 构建prompt（使用投毒数据集构建演示，确保包含投毒样本传播后门）
+        prompt = build_icl_prompt(poisoned_dataset, i, n_shots=5, seed=42)
+        # 替换查询部分为投毒文本
         prompt_lines = prompt.split('\n\n')
-        prompt_lines[-1] = f"Text: {poisoned_text}\nLabel:"
+        prompt_lines[-1] = f"Review: {poisoned_text}\nSentiment:"
         prompt = '\n\n'.join(prompt_lines)
 
         try:
-            pred_text = model.predict(prompt, max_new_tokens=5)
-            pred_label = int(''.join(filter(str.isdigit, pred_text))[:1]) if any(c.isdigit() for c in pred_text) else -1
+            pred_text = model.predict(prompt, max_new_tokens=5).strip().lower()
+            # DEBUG: 打印前几个样本的预测
+            if i < 3:
+                print(f"\n    [DEBUG] Poisoned Sample {i}:")
+                print(f"    Text: {poisoned_text[:50]}...")
+                print(f"    Raw prediction: '{pred_text}'")
+            pred_label = parse_label(pred_text, target_label)
+            if i < 3:
+                print(f"    Parsed label: {pred_label} (target: {target_label})")
             poison_preds.append(pred_label)
         except Exception as e:
+            if i < 3:
+                print(f"\n    [DEBUG] Poisoned Sample {i} error: {e}")
             poison_preds.append(-1)
 
     # 计算指标

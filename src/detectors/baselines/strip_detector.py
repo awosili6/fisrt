@@ -190,11 +190,17 @@ class STRIPDetector(BaseDetector):
         # 使用负熵作为异常分数（越高越异常）
         anomaly_score = -entropy
 
-        # 判断（需要阈值，这里使用启发式）
-        threshold = self.threshold if self.threshold is not None else -1.0
-        is_poisoned = anomaly_score > threshold
-
-        confidence = min(abs(anomaly_score - threshold) / (abs(threshold) + 1e-10), 1.0)
+        # 判断（需要阈值）
+        # threshold 存储的是负熵阈值（fit_threshold中设置）
+        if self.threshold is not None:
+            # threshold 是负数（负熵），anomaly_score 也是负数
+            # 投毒样本的负熵更高（熵更低），所以用 >
+            is_poisoned = anomaly_score > self.threshold
+            confidence = min(abs(anomaly_score - self.threshold) / (abs(self.threshold) + 1e-10), 1.0)
+        else:
+            # 默认启发式：负熵 > -1.0 认为是投毒
+            is_poisoned = anomaly_score > -1.0
+            confidence = min(abs(anomaly_score - (-1.0)), 1.0)
 
         return {
             'is_poisoned': is_poisoned,
@@ -235,10 +241,14 @@ class STRIPDetector(BaseDetector):
 
         from sklearn.metrics import f1_score
 
-        best_threshold = -1.0
+        # 默认使用均值作为阈值
+        mean_entropy = np.mean(all_entropies)
+        best_threshold = mean_entropy
         best_f1 = 0
 
-        for threshold_candidate in np.linspace(min(all_entropies), max(all_entropies), 100):
+        # 尝试不同的熵阈值
+        entropy_range = np.linspace(min(all_entropies), max(all_entropies), 100)
+        for threshold_candidate in entropy_range:
             # 注意：低熵对应投毒样本
             predictions = [1 if e < threshold_candidate else 0 for e in all_entropies]
             f1 = f1_score(all_labels, predictions, zero_division=0)
@@ -247,6 +257,12 @@ class STRIPDetector(BaseDetector):
                 best_f1 = f1
                 best_threshold = threshold_candidate
 
+        # 如果找不到好的阈值，使用均值
+        if best_f1 == 0:
+            # 无法区分，使用均值作为阈值
+            best_threshold = mean_entropy
+
+        # 存储为负熵（与 detect 中的 anomaly_score 一致）
         self.threshold = -best_threshold
         return best_threshold
 

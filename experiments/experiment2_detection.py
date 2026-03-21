@@ -20,6 +20,8 @@ from src.datasets.data_loader import DatasetLoader, PoisonedDataset
 from src.attacks.badnets_attack import BadNetsAttack
 from src.detectors.prompt_eraser import PromptEraserDetector
 from src.detectors.attention_eraser import AttentionEraserDetector
+from src.detectors.greedy_eraser import GreedyEraserDetector
+from src.detectors.gradient_eraser import GradientEraserDetector
 from src.detectors.baselines.strip_detector import STRIPDetector
 from src.detectors.baselines.onion_detector import ONIONDetector
 from src.evaluation.metrics import Evaluator
@@ -164,6 +166,14 @@ def run_detection_comparison(model_name: str, dataset_name: str,
             model.model, model.tokenizer,
             erase_ratio=0.3, n_iterations=10, device=device
         ),
+        'GreedyEraser': GreedyEraserDetector(
+            model.model, model.tokenizer,
+            erase_ratio=0.3, n_iterations=5, device=device
+        ),
+        'GradientEraser': GradientEraserDetector(
+            model.model, model.tokenizer,
+            erase_ratio=0.3, n_iterations=5, device=device
+        ),
         'STRIP': STRIPDetector(
             model.model, model.tokenizer,
             n_iterations=50, device=device
@@ -193,7 +203,7 @@ def run_detection_comparison(model_name: str, dataset_name: str,
 
             try:
                 # 检查检测器类型，调用相应的 fit_threshold
-                if name in ['PromptEraser', 'AttentionEraser']:
+                if name in ['PromptEraser', 'AttentionEraser', 'GreedyEraser', 'GradientEraser']:
                     # 这些检测器使用分数列表
                     # 使用 label_words 限制预测分布，提高检测信噪比
                     label_words = ['negative', 'positive']  # SST-2 标签词
@@ -205,17 +215,17 @@ def run_detection_comparison(model_name: str, dataset_name: str,
                     for text in calib_poison_texts:
                         result = detector.detect(text, demonstrations=demonstrations, label_words=label_words)
                         poison_scores.append(result['score'])
-                    # 调试输出
-                    valid_clean = [s for s in clean_scores if np.isfinite(s)]
-                    valid_poison = [s for s in poison_scores if np.isfinite(s)]
-                    print(f"    DEBUG: clean_scores (valid={len(valid_clean)}) = {clean_scores}")
-                    print(f"    DEBUG: poison_scores (valid={len(valid_poison)}) = {poison_scores}")
-                    if valid_clean and valid_poison:
-                        detector.fit_threshold(clean_scores, poison_scores, metric='f1')
-                        print(f"    Fitted threshold: {detector.threshold:.4f}")
-                    else:
-                        print(f"    Warning: could not fit threshold, using default")
-                elif name in ['STRIP', 'ONION']:
+                #     # 调试输出
+                #     valid_clean = [s for s in clean_scores if np.isfinite(s)]
+                #     valid_poison = [s for s in poison_scores if np.isfinite(s)]
+                #     print(f"    DEBUG: clean_scores (valid={len(valid_clean)}) = {clean_scores}")
+                #     print(f"    DEBUG: poison_scores (valid={len(valid_poison)}) = {poison_scores}")
+                #     if valid_clean and valid_poison:
+                #         detector.fit_threshold(clean_scores, poison_scores, metric='f1')
+                #         print(f"    Fitted threshold: {detector.threshold:.4f}")
+                #     else:
+                #         print(f"    Warning: could not fit threshold, using default")
+                # elif name in ['STRIP', 'ONION']:
                     # 这些检测器使用文本列表
                     if calib_clean_texts and calib_poison_texts:
                         detector.fit_threshold(calib_clean_texts, calib_poison_texts, demonstrations=demonstrations)

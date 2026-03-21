@@ -31,6 +31,7 @@ class ONIONDetector(BaseDetector):
         """
         super().__init__(model, tokenizer, device)
         self.perplexity_threshold = perplexity_threshold
+        self.threshold = perplexity_threshold  # 兼容性：实验代码可能使用 threshold
 
     def compute_perplexity(self, text: str) -> float:
         """
@@ -227,4 +228,5 @@ class ONIONDetector(BaseDetector):
                 best_threshold = threshold_candidate
 
         self.perplexity_threshold = abs(best_threshold)
+        self.threshold = self.perplexity_threshold  # 兼容性
         return self.perplexity_threshold
