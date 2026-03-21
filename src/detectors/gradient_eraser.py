@@ -26,7 +26,8 @@ class GradientEraserDetector(PromptEraserDetector):
 
     def __init__(self, model, tokenizer, erase_ratio: float = 0.3,
                  n_iterations: int = 10, gradient_method: str = 'input_embeds',
-                 device: str = 'cuda', seed: Optional[int] = None):
+                 device: str = 'cuda', seed: Optional[int] = None,
+                 model_name: str = None):
         """
         初始化梯度擦除检测器
 
@@ -38,9 +39,10 @@ class GradientEraserDetector(PromptEraserDetector):
             gradient_method: 梯度计算方法
             device: 计算设备
             seed: 随机种子
+            model_name: 模型名称，用于ChatML格式化
         """
         super().__init__(model, tokenizer, erase_ratio, n_iterations,
-                        'max', device, seed)
+                        'max', device, seed, model_name=model_name)
         self.gradient_method = gradient_method
 
     def compute_gradient_importance(self, text: str,

@@ -24,7 +24,8 @@ class AttentionEraserDetector(PromptEraserDetector):
 
     def __init__(self, model, tokenizer, erase_ratio: float = 0.3,
                  n_iterations: int = 10, attention_layer: int = -1,
-                 selection_strategy: str = 'lowest', device: str = 'cuda'):
+                 selection_strategy: str = 'lowest', device: str = 'cuda',
+                 model_name: str = None):
         """
         初始化Attention擦除检测器
 
@@ -36,8 +37,9 @@ class AttentionEraserDetector(PromptEraserDetector):
             attention_layer: 使用的attention层索引
             selection_strategy: token选择策略
             device: 计算设备
+            model_name: 模型名称，用于ChatML格式化
         """
-        super().__init__(model, tokenizer, erase_ratio, n_iterations, 'mean', device)
+        super().__init__(model, tokenizer, erase_ratio, n_iterations, 'mean', device, model_name=model_name)
         self.attention_layer = attention_layer
         self.selection_strategy = selection_strategy
 

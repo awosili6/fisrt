@@ -21,7 +21,8 @@ class STRIPDetector(BaseDetector):
     """
 
     def __init__(self, model, tokenizer, n_iterations: int = 100,
-                 perturbation_methods: List[str] = None, device: str = 'cuda'):
+                 perturbation_methods: List[str] = None, device: str = 'cuda',
+                 model_name: str = None):
         """
         初始化STRIP检测器
 
@@ -31,8 +32,9 @@ class STRIPDetector(BaseDetector):
             n_iterations: 扰动迭代次数
             perturbation_methods: 扰动方法列表
             device: 计算设备
+            model_name: 模型名称，用于ChatML格式化
         """
-        super().__init__(model, tokenizer, device)
+        super().__init__(model, tokenizer, device, model_name)
         self.n_iterations = n_iterations
         self.perturbation_methods = perturbation_methods or ['insert', 'delete', 'swap']
         self.threshold = None

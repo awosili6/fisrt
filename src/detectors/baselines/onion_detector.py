@@ -19,7 +19,7 @@ class ONIONDetector(BaseDetector):
     """
 
     def __init__(self, model, tokenizer, perplexity_threshold: float = None,
-                 device: str = 'cuda'):
+                 device: str = 'cuda', model_name: str = None):
         """
         初始化ONION检测器
 
@@ -28,8 +28,9 @@ class ONIONDetector(BaseDetector):
             tokenizer: 分词器
             perplexity_threshold: 困惑度变化阈值
             device: 计算设备
+            model_name: 模型名称，用于ChatML格式化
         """
-        super().__init__(model, tokenizer, device)
+        super().__init__(model, tokenizer, device, model_name)
         self.perplexity_threshold = perplexity_threshold
         self.threshold = perplexity_threshold  # 兼容性：实验代码可能使用 threshold
 

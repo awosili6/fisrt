@@ -27,7 +27,8 @@ class PromptEraserDetector(BaseDetector):
 
     def __init__(self, model, tokenizer, erase_ratio: float = 0.3,
                  n_iterations: int = 10, aggregation: str = 'max',
-                 device: str = 'cuda', seed: Optional[int] = None):
+                 device: str = 'cuda', seed: Optional[int] = None,
+                 model_name: str = None):
         """
         初始化擦除检测器
 
@@ -39,8 +40,9 @@ class PromptEraserDetector(BaseDetector):
             aggregation: 分数聚合方法
             device: 计算设备
             seed: 随机种子，为None时不固定随机性
+            model_name: 模型名称，用于ChatML格式化
         """
-        super().__init__(model, tokenizer, device)
+        super().__init__(model, tokenizer, device, model_name)
         self.erase_ratio = erase_ratio
         self.n_iterations = n_iterations
         self.aggregation = aggregation
@@ -156,13 +158,18 @@ class PromptEraserDetector(BaseDetector):
         full_probs = self.compute_prediction(text, demonstrations)  # (vocab_size,)
 
         # 将每个标签词映射到词汇表id
-        # 对于 LLaMA/TinyLlama，直接使用 tokenizer.encode(word) 获取正确的 token id
+        # 注意：对于 Qwen 等模型，标签词在生成时通常带有前导空格
         label_ids = []
         for word in label_words:
-            # 尝试不带空格的编码（LLaMA/TinyLlama 适用）
-            token_ids = self.tokenizer.encode(word, add_special_tokens=False)
-            if token_ids:
-                label_ids.append(token_ids[0])
+            # 先尝试带空格（更符合生成时的实际情况）
+            token_ids_space = self.tokenizer.encode(" " + word, add_special_tokens=False)
+            token_ids_plain = self.tokenizer.encode(word, add_special_tokens=False)
+
+            # 选择有效的 token ID（优先带空格的版本）
+            if token_ids_space:
+                label_ids.append(token_ids_space[0])
+            elif token_ids_plain:
+                label_ids.append(token_ids_plain[0])
             else:
                 label_ids.append(0)
 
@@ -716,11 +723,21 @@ class PromptEraserDetector(BaseDetector):
                 best_score = score
                 best_threshold = threshold
 
-        # 分布完全重叠时best_score==0，阈值退化到min(all_scores)导致FPR=1.0；
-        # 改用clean/poison均值的中点作为兜底阈值
-        if best_score == 0:
-            mid = (np.mean(clean_scores) + np.mean(poison_scores)) / 2.0
-            best_threshold = float(mid) if np.isfinite(mid) else 0.5
+        # 分布完全重叠时best_score==0，或clean/poison分数颠倒时
+        # 使用统计方法：阈值 = clean均值 + 0.5 * (poison均值 - clean均值)
+        clean_mean = np.mean(clean_scores)
+        poison_mean = np.mean(poison_scores)
+
+        if best_score == 0 or best_score < 0.3:
+            # 分数分布不理想，使用两分布中间点
+            if poison_mean > clean_mean:
+                # 正常情况：poison分数更高
+                best_threshold = (clean_mean + poison_mean) / 2.0
+            else:
+                # 异常情况：clean分数更高（如InsertSent的随机擦除）
+                # 使用clean均值 + 0.5标准差作为阈值
+                best_threshold = clean_mean + 0.5 * np.std(clean_scores)
+            best_threshold = float(best_threshold) if np.isfinite(best_threshold) else 0.5
 
         self.threshold = best_threshold
         return best_threshold

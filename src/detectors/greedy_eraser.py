@@ -26,7 +26,8 @@ class GreedyEraserDetector(PromptEraserDetector):
 
     def __init__(self, model, tokenizer, erase_ratio: float = 0.3,
                  n_iterations: int = 10, selection_method: str = 'impact',
-                 device: str = 'cuda', seed: Optional[int] = None):
+                 device: str = 'cuda', seed: Optional[int] = None,
+                 model_name: str = None):
         """
         初始化贪心擦除检测器
 
@@ -38,9 +39,10 @@ class GreedyEraserDetector(PromptEraserDetector):
             selection_method: token选择方法 ('impact', 'attention')
             device: 计算设备
             seed: 随机种子
+            model_name: 模型名称，用于ChatML格式化
         """
         super().__init__(model, tokenizer, erase_ratio, n_iterations,
-                        'max', device, seed)  # 默认使用max聚合
+                        'max', device, seed, model_name=model_name)  # 默认使用max聚合
         self.selection_method = selection_method
 
     def compute_token_importance(self, text: str, demonstrations: List[Dict] = None,
